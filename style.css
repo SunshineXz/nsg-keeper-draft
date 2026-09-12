@@ -214,7 +214,7 @@ tr.nofit .pname { text-decoration: none; }
 }
 .pos.F { background: var(--F); } .pos.D { background: var(--D); } .pos.G { background: var(--G); }
 .why { font-size: 12px; color: var(--bad); }
-.gline { font-size: 12px; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.glab { font-size: 10px; font-weight: 700; color: var(--ink-3); margin-right: 4px; letter-spacing: .02em; }
 /* the player name stays in view while the stat columns scroll sideways */
 table.players th:first-child, table.players td:first-child { position: sticky; left: 0; background: var(--panel); z-index: 1; }
 table.players thead th:first-child { z-index: 2; }

@@ -668,10 +668,15 @@ function renderPlayers() {
     : (a, b) => nullsLast(statVal(a, ui.sort), statVal(b, ui.sort));
   list.sort(cmp);
   const statCells = p => {
-    if (p.g === "G" && cols === SKATER_COLS) {           // a goalie in a skater list: his own line, one cell
+    if (p.g === "G" && cols === SKATER_COLS) {
+      // A goalie in a skater list: his own stats, one per column so they line
+      // up with every other row, each labelled because the header is a
+      // skater's. GP lands under GP; the columns he has no stat for stay empty.
       const line = ui.view === "last" ? p.l : p.s;
-      const txt = line ? GOALIE_COLS.map(([k, label]) => `${label} ${line[GK_IDX[k]]}`).join(" · ") : "—";
-      return `<td class="gline" colspan="${cols.length}">${txt}</td>`;
+      const cells = GOALIE_COLS.map(([k, label], i) => !line ? `<td class="num">${i ? "" : "—"}</td>`
+        : `<td class="num"><span class="glab">${label}</span>${line[GK_IDX[k]]}</td>`);
+      while (cells.length < cols.length) cells.push(`<td class="num"></td>`);
+      return cells.join("");
     }
     return cols.map(([k]) => { const v = statVal(p, k); return `<td class="num">${v == null ? "—" : v}</td>`; }).join("");
   };
