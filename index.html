@@ -62,18 +62,15 @@
         <button data-pos="D">D</button>
         <button data-pos="G">G</button>
       </div>
+      <div class="seg" id="viewToggle" title="ESPN's numbers">
+        <button data-view="proj" class="on">2026-27 projections</button>
+        <button data-view="last">2025-26 stats</button>
+      </div>
       <label class="check" id="fitsWrap" hidden><input type="checkbox" id="fitsOnly"> Only players my team can fit</label>
     </div>
     <div class="table-wrap">
       <table class="players">
-        <thead><tr>
-          <th data-sort="n">Player</th>
-          <th>Pos</th>
-          <th data-sort="cap" class="num">Cap hit</th>
-          <th data-sort="pts" class="num">Proj pts</th>
-          <th data-sort="adp" class="num sorted">ADP</th>
-          <th></th>
-        </tr></thead>
+        <thead id="playerHead"></thead>
         <tbody id="playerRows"></tbody>
       </table>
     </div>

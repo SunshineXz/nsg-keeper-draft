@@ -38,7 +38,23 @@ PLAYERS.forEach(p => { p._f = fold(p.n); });
 let backend = null;
 let D = null;                               // derived view of the draft tree
 const me = { team: null, commish: false };
-const ui = { tab: "players", pos: "all", q: "", sort: "adp", desc: false, fitsOnly: false, open: new Set() };
+const ui = { tab: "players", pos: "all", q: "", sort: "adp", desc: false, view: "proj", fitsOnly: false, open: new Set() };
+
+/* The player list shows ESPN's raw stat lines, never fantasy points (user,
+   2026-09-12): 2026-27 projections or 2025-26 actual stats. Skater line
+   [GP, G, A, PPP, SHP, SOG, HIT]; goalie line [GP, W, L, OTL, SV, SO] - the
+   stats goalies are scored on. */
+const SKATER_COLS = [["gp", "GP"], ["g", "G"], ["a", "A"], ["pt", "P"], ["ppp", "PPP"], ["shp", "SHP"], ["hit", "Hits"], ["sog", "Shots"]];
+const GOALIE_COLS = [["gp", "GP"], ["w", "W"], ["l", "L"], ["otl", "OTL"], ["sv", "SV"], ["so", "SO"]];
+const SK_IDX = { gp: 0, g: 1, a: 2, ppp: 3, shp: 4, sog: 5, hit: 6 };
+const GK_IDX = { gp: 0, w: 1, l: 2, otl: 3, sv: 4, so: 5 };
+function statVal(p, key) {
+  const line = ui.view === "last" ? p.l : p.s;
+  if (!line) return null;
+  if (p.g === "G") return key in GK_IDX ? line[GK_IDX[key]] : null;
+  if (key === "pt") return line[1] + line[2];
+  return key in SK_IDX ? line[SK_IDX[key]] : null;
+}
 let autoTried = -1, lastOnClock = null, pendingPick = false;
 
 /* ---------------------------------------------------------------- derive */
@@ -108,7 +124,7 @@ function whyNot(d, teamId, p, adjust) {
 /* A warning, not a block: the pick fits, but leaves less cap than the
    cheapest players still available would cost to fill the other open spots,
    so the team will likely end up with a forced pick over the cap later. */
-function fillWarning(d, teamId, p, adjust) {
+function fillWarning(d, teamId, p, adjust, marginPerSpot = 0) {
   const s = teamAfter(d, teamId, adjust);
   if (!s) return null;
   const req = d.cfg.req;
@@ -122,18 +138,31 @@ function fillWarning(d, teamId, p, adjust) {
       need += c.cap; k--; spots++;
     }
   }
-  return left < need ? `Leaves ${fmtM(left)} for ${spots} open spot${spots === 1 ? "" : "s"} (cheapest fill ${fmtM(need)})` : null;
+  return left < need + marginPerSpot * spots
+    ? `Leaves ${fmtM(left)} for ${spots} open spot${spots === 1 ? "" : "s"} (cheapest fill ${fmtM(need)})` : null;
 }
 
+/* The cheapest players available NOW are not the ones a team will find on its
+   next turns: other teams take them in between. Test draft 2026-09-12: an
+   auto-drafted team filling 6 spots at exactly the $812.5K floor was stranded
+   when an $800K defenceman went elsewhere, and its forced last pick put it
+   $5,357 over. So the auto-pick keeps this much extra per open spot. */
+const AUTO_RESERVE_PER_SPOT = 50000;
+
 /* The clock's pick: best ESPN ADP that fits under the cap and keeps the
-   roster completable; failing that, best ADP that at least fits under the
-   cap. When NOTHING fits under the cap, the league's rule is the cheapest
-   player (then the lowest projection) at a position still open, even though
-   it goes over - a forced pick. */
+   roster completable (with the reserve above); failing that, best ADP that
+   at least fits under the cap. When NOTHING fits under the cap, the league's
+   rule is the cheapest player (then the lowest projection) at a position
+   still open, even though it goes over - a forced pick.
+   ADP is deliberate (user, 2026-09-12): it comes from ESPN's standard
+   leagues - other scoring, no cap - so it is a poor guide here, and that is
+   the point: timing out should cost you. Cap awareness stays the minimum:
+   legal and completable, nothing smarter. */
 function autoChoice(d, teamId) {
-  const byAdp = [...d.available].sort((a, b) => (a.adp ?? 1e9) - (b.adp ?? 1e9) || (b.pts ?? -1) - (a.pts ?? -1));
-  const fits = byAdp.filter(p => !whyNot(d, teamId, p));
-  return fits.find(p => !fillWarning(d, teamId, p)) || fits[0] || forcedChoice(d, teamId);
+  const ranked = [...d.available].sort((a, b) => (a.adp ?? 1e9) - (b.adp ?? 1e9) || (b.pts ?? -1) - (a.pts ?? -1));
+  const fits = ranked.filter(p => !whyNot(d, teamId, p));
+  return fits.find(p => !fillWarning(d, teamId, p, null, AUTO_RESERVE_PER_SPOT))
+    || fits.find(p => !fillWarning(d, teamId, p)) || fits[0] || forcedChoice(d, teamId);
 }
 
 function forcedChoice(d, teamId) {
@@ -280,7 +309,8 @@ const commish = {
     const lines = [["Pick", "Round", "Team", "Player", "Pos", "NHL Team", "Cap Hit", "How"].join(",")];
     for (const pk of D.picks) {
       const p = P.get(pk.p) || { n: pk.p, pos: "", tm: "", cap: 0 };
-      lines.push([pk.n + 1, Math.floor(pk.n / N_TEAMS) + 1, teamName(pk.t), p.n, p.pos, p.tm, p.cap, pk.by]
+      lines.push([pk.n + 1, Math.floor(pk.n / N_TEAMS) + 1, teamName(pk.t), p.n, p.pos, p.tm, p.cap,
+                  pk.forced ? `${pk.by} (over cap)` : pk.by]
         .map(v => `"${String(v).replace(/"/g, '""')}"`).join(","));
     }
     const a = document.createElement("a");
@@ -607,7 +637,17 @@ function renderUpNext() {
 
 function renderPlayers() {
   const tbody = $("#playerRows");
-  if (!D) { tbody.innerHTML = `<tr><td colspan="6" class="empty">Waiting for the draft room to be set up.</td></tr>`; return; }
+  const cols = ui.pos === "G" ? GOALIE_COLS : SKATER_COLS;
+  const span = cols.length + 5;
+  if (!["n", "cap", "adp"].includes(ui.sort) && !cols.some(([k]) => k === ui.sort)) { ui.sort = "adp"; ui.desc = false; }
+  $("#playerHead").innerHTML = `<tr><th data-sort="n">Player</th><th>Pos</th><th data-sort="cap" class="num">Cap hit</th>` +
+    cols.map(([k, label]) => `<th data-sort="${k}" class="num">${label}</th>`).join("") +
+    `<th data-sort="adp" class="num">ADP</th><th></th></tr>`;
+  $("#playerHead").querySelectorAll("th[data-sort]").forEach(th => {
+    th.classList.toggle("sorted", th.dataset.sort === ui.sort);
+    th.classList.toggle("desc", th.dataset.sort === ui.sort && ui.desc);
+  });
+  if (!D) { tbody.innerHTML = `<tr><td colspan="${span}" class="empty">Waiting for the draft room to be set up.</td></tr>`; return; }
   const pickNow = canPickNow(D);
   const ctx = pickNow ? D.onClock : me.team;      // whose legality to show
   $("#fitsWrap").hidden = !ctx;
@@ -621,17 +661,20 @@ function renderPlayers() {
   }
   if (ui.fitsOnly && ctx) list = list.filter(p => !reasons.has(p.id));
   const dir = ui.desc ? -1 : 1;
-  const cmp = {
-    adp: (a, b) => ((a.adp ?? 1e9) - (b.adp ?? 1e9)) * dir || (b.pts ?? -1) - (a.pts ?? -1),
-    pts: (a, b) => ((a.pts ?? -1) - (b.pts ?? -1)) * dir,
-    cap: (a, b) => (a.cap - b.cap) * dir,
-    n: (a, b) => a.n.localeCompare(b.n) * dir,
-  }[ui.sort];
+  const nullsLast = (x, y) => (x == null && y == null ? 0 : x == null ? 1 : y == null ? -1 : (x - y) * dir);
+  const cmp = ui.sort === "n" ? (a, b) => a.n.localeCompare(b.n) * dir
+    : ui.sort === "adp" ? (a, b) => ((a.adp ?? 1e9) - (b.adp ?? 1e9)) * dir || (b.pts ?? -1) - (a.pts ?? -1)
+    : ui.sort === "cap" ? (a, b) => (a.cap - b.cap) * dir
+    : (a, b) => nullsLast(statVal(a, ui.sort), statVal(b, ui.sort));
   list.sort(cmp);
-  document.querySelectorAll("th[data-sort]").forEach(th => {
-    th.classList.toggle("sorted", th.dataset.sort === ui.sort);
-    th.classList.toggle("desc", th.dataset.sort === ui.sort && ui.desc);
-  });
+  const statCells = p => {
+    if (p.g === "G" && cols === SKATER_COLS) {           // a goalie in a skater list: his own line, one cell
+      const line = ui.view === "last" ? p.l : p.s;
+      const txt = line ? GOALIE_COLS.map(([k, label]) => `${label} ${line[GK_IDX[k]]}`).join(" · ") : "—";
+      return `<td class="gline" colspan="${cols.length}">${txt}</td>`;
+    }
+    return cols.map(([k]) => { const v = statVal(p, k); return `<td class="num">${v == null ? "—" : v}</td>`; }).join("");
+  };
   const shown = list.slice(0, MAX_ROWS);
   tbody.innerHTML = shown.length ? shown.map(p => {
     const why = reasons.get(p.id), warn = warns.get(p.id);
@@ -641,10 +684,10 @@ function renderPlayers() {
         : warn ? `<div class="warnline">${esc(warn)}</div>` : ""}</td>
       <td><span class="pos ${p.g}">${esc(p.pos)}</span></td>
       <td class="num">${fmtM(p.cap)}</td>
-      <td class="num">${p.pts == null ? "—" : p.pts.toFixed(1)}</td>
+      ${statCells(p)}
       <td class="num">${p.adp == null ? "—" : p.adp.toFixed(1)}</td>
       <td class="num">${btn}</td></tr>`;
-  }).join("") : `<tr><td colspan="6" class="empty">No players match.</td></tr>`;
+  }).join("") : `<tr><td colspan="${span}" class="empty">No players match.</td></tr>`;
   $("#rowHint").textContent = list.length > MAX_ROWS ? `Showing ${MAX_ROWS} of ${list.length} - search to find anyone else.` : "";
 }
 
@@ -807,10 +850,18 @@ function wire() {
     renderPlayers();
   });
   $("#fitsOnly").onchange = e => { ui.fitsOnly = e.target.checked; renderPlayers(); };
-  document.querySelectorAll("th[data-sort]").forEach(th => th.onclick = () => {
+  // headers are re-rendered with the columns, so listen on the thead
+  $("#playerHead").onclick = e => {
+    const th = e.target.closest("th[data-sort]");
+    if (!th) return;
     const s = th.dataset.sort;
     if (ui.sort === s) ui.desc = !ui.desc;
-    else { ui.sort = s; ui.desc = s === "pts" || s === "cap"; }
+    else { ui.sort = s; ui.desc = !(s === "n" || s === "adp"); }   // stats and cap: biggest first
+    renderPlayers();
+  };
+  document.querySelectorAll("#viewToggle button").forEach(b => b.onclick = () => {
+    ui.view = b.dataset.view;
+    document.querySelectorAll("#viewToggle button").forEach(x => x.classList.toggle("on", x === b));
     renderPlayers();
   });
   $("#playerRows").onclick = e => { const b = e.target.closest("[data-pick]"); if (b && !b.disabled) askPick(b.dataset.pick); };

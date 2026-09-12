@@ -214,6 +214,11 @@ tr.nofit .pname { text-decoration: none; }
 }
 .pos.F { background: var(--F); } .pos.D { background: var(--D); } .pos.G { background: var(--G); }
 .why { font-size: 12px; color: var(--bad); }
+.gline { font-size: 12px; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+/* the player name stays in view while the stat columns scroll sideways */
+table.players th:first-child, table.players td:first-child { position: sticky; left: 0; background: var(--panel); z-index: 1; }
+table.players thead th:first-child { z-index: 2; }
+table.players tbody tr:hover td:first-child { background: var(--panel-2); }
 .warnline { font-size: 12px; color: var(--warn); }
 .hint { color: var(--ink-3); font-size: 12px; margin: 0; padding: 8px 12px; }
 
