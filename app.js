@@ -33,6 +33,7 @@ const [PLAYERS, LEAGUE] = await Promise.all([
 const P = new Map(PLAYERS.map(p => [p.id, p]));
 const TEAM = new Map(LEAGUE.teams.map(t => [t.id, t]));
 const N_TEAMS = LEAGUE.teams.length;
+const BENCH = LEAGUE.bench || { F: 0, D: 0, G: 0 };   // of each position's spots, this many are bench
 PLAYERS.forEach(p => { p._f = fold(p.n); });
 
 let backend = null;
@@ -56,6 +57,8 @@ function statVal(p, key) {
   return key in SK_IDX ? line[SK_IDX[key]] : null;
 }
 let autoTried = -1, lastOnClock = null, pendingPick = false;
+let online = new Set();                     // teams with somebody in the room
+const chat = { msgs: [], seen: 0, loaded: false, error: "" };
 
 /* ---------------------------------------------------------------- derive */
 
@@ -510,6 +513,7 @@ function render() {
   renderTeams();
   if (ui.tab === "board") renderBoard();
   if (ui.tab === "log") renderLog();
+  if (ui.tab === "chat") renderChat();
 }
 
 function renderBanner() {
@@ -696,22 +700,61 @@ function renderPlayers() {
   $("#rowHint").textContent = list.length > MAX_ROWS ? `Showing ${MAX_ROWS} of ${list.length} - search to find anyone else.` : "";
 }
 
+/* A team's roster read as the slots it has to fill: forwards, then defence,
+   then goal, then the bench at the end, with every slot that isn't filled yet
+   shown as an empty one. Slots fill in the order players arrive - keepers,
+   then picks - and nothing moves afterwards, so a team's seventh forward is
+   the one on the bench (user, 2026-09-15). */
+function slotRows(tm) {
+  const got = { F: [], D: [], G: [] };
+  for (const p of tm.keepers) got[p.g].push({ p, keeper: true });
+  for (const pk of tm.picks) if (pk.player) got[pk.player.g].push({ p: pk.player });
+  const active = [], bench = [];
+  for (const g of GROUPS) {
+    const nActive = D.cfg.req[g] - (BENCH[g] || 0);
+    for (let i = 0; i < D.cfg.req[g]; i++) (i < nActive ? active : bench).push({ g, ...(got[g][i] || {}) });
+  }
+  return { active, bench };
+}
+
+function slotLine(s) {
+  const right = s.p ? fmtM(s.p.cap) : "&mdash;";
+  // the slot, not the player's ESPN position: F/D/G is what the roster is made of
+  const left = s.p
+    ? `<span class="pos ${s.p.g}">${s.p.g}</span> ${esc(s.p.n)}${s.keeper ? `<span class="k">K</span>` : ""}`
+    : `<span class="pos ${s.g}">${s.g}</span> <i>empty</i>`;
+  return `<div class="${s.p ? "" : "slot-empty"}"><span>${left}</span><span>${right}</span></div>`;
+}
+
+/* What each remaining pick can cost on average: $25M left over 5 open spots
+   is a $5M pace. Over the cap (only ever a forced pick) there is no pace to
+   show, so it says by how much instead. */
+function paceLine(tm) {
+  const left = D.cfg.capMax - tm.cap;
+  const open = D.cfg.req.F + D.cfg.req.D + D.cfg.req.G - (tm.keepers.length + tm.picks.length);
+  if (left < 0) return `Over the cap by ${fmtM(-left)}`;
+  if (open <= 0) return "Roster full";
+  return `${fmtM(left / open)} per pick &middot; ${open} spot${open === 1 ? "" : "s"} left`;
+}
+
 function renderTeams() {
   const el = $("#teamList");
+  const count = $("#onlineCount");
+  count.textContent = online.size ? `${online.size} online` : "";
   if (!D) { el.innerHTML = ""; return; }
   el.innerHTML = (D.status === "setup" ? `<p class="hint" style="padding:0 0 8px">Keepers are revealed when the draft starts.</p>` : "") +
     D.cfg.order.map(id => {
     const tm = D.teams[id];
     const left = D.cfg.capMax - tm.cap;
     const slots = GROUPS.map(g => `<span class="${tm.cnt[g] >= D.cfg.req[g] ? "full" : ""}">${g} ${tm.cnt[g]}/${D.cfg.req[g]}</span>`).join("");
-    const open = ui.open.has(id);
-    const roster = open ? `<div class="roster">${[
-      ...tm.keepers.map(p => `<div><span><span class="pos ${p.g}">${esc(p.pos)}</span> ${esc(p.n)}<span class="k">K</span></span><span>${fmtM(p.cap)}</span></div>`),
-      ...tm.picks.map(pk => pk.player ? `<div><span><span class="pos ${pk.player.g}">${esc(pk.player.pos)}</span> ${esc(pk.player.n)}</span><span>${fmtM(pk.player.cap)}</span></div>` : ""),
-    ].join("")}</div>` : "";
+    const on = online.has(id);
+    const rows = slotRows(tm);
+    const roster = ui.open.has(id) ? `<div class="roster">${rows.active.map(slotLine).join("")}
+      <div class="slot-head">Bench</div>${rows.bench.map(slotLine).join("")}</div>` : "";
     return `<div class="team${id === D.onClock ? " onclock" : ""}${id === me.team ? " me" : ""}" data-team="${id}">
-      <div class="team-head"><span>${esc(teamName(id))}</span><span class="cap${left < 3e6 ? " low" : ""}">${fmtM(left)}</span></div>
-      <div class="slots">${slots}<span>${tm.keepers.length + tm.picks.length}/${D.cfg.req.F + D.cfg.req.D + D.cfg.req.G}</span></div>${roster}</div>`;
+      <div class="team-head"><span><span class="pdot${on ? " on" : ""}" title="${on ? "In the room" : "Not in the room"}"></span>${esc(teamName(id))}</span><span class="cap${left < 3e6 ? " low" : ""}">${fmtM(left)}</span></div>
+      <div class="slots">${slots}<span>${tm.keepers.length + tm.picks.length}/${D.cfg.req.F + D.cfg.req.D + D.cfg.req.G}</span></div>
+      <div class="pace">${paceLine(tm)}</div>${roster}</div>`;
   }).join("");
 }
 
@@ -787,6 +830,80 @@ function editPick(n) {
   $("#editSearch").focus();
 }
 
+/* ---------------------------------------------------------------- chat
+   One shared list of short messages, so an owner can ask for a pause or an
+   undo without leaving the room. Anyone can read it; only a team (or the
+   commissioner) can post, and the rules check that the team on a message is
+   the one that browser holds the link for. A message that lands while you are
+   on another tab shows as a toast and a count on the Chat tab. */
+const CHAT_MAX = 300;
+
+function renderChat() {
+  const el = $("#chatList");
+  const mine = !!me.team;
+  $("#chatForm").hidden = !mine;
+  $("#chatHint").textContent = chat.error || (mine ? "" : "Open your team link to join the conversation.");
+  if (!chat.msgs.length) { el.innerHTML = `<div class="empty">No messages yet.</div>`; return; }
+  const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+  el.innerHTML = chat.msgs.map(m => {
+    const t = new Date(m.at || Date.now());
+    return `<div class="msg${m.t === me.team ? " me" : ""}">
+      <div class="msg-who">${esc(teamName(m.t))}${m.t === LEAGUE.commishTeam ? ` <span class="by">COMMISH</span>` : ""}
+        <span class="msg-at">${String(t.getHours()).padStart(2, "0")}:${String(t.getMinutes()).padStart(2, "0")}</span></div>
+      <div class="msg-text">${esc(m.m)}</div></div>`;
+  }).join("");
+  if (atBottom || ui.tab === "chat") el.scrollTop = el.scrollHeight;
+}
+
+function renderChatBadge() {
+  const b = $("#chatBadge");
+  const n = Math.max(0, chat.msgs.length - chat.seen);
+  b.textContent = n > 9 ? "9+" : String(n);
+  b.hidden = !n;
+}
+
+function onChat(v) {
+  const was = chat.msgs.length;
+  chat.msgs = rows(v).map(([k, m]) => ({ k, ...m })).sort((a, b) => (a.at || 0) - (b.at || 0) || a.k.localeCompare(b.k)).slice(-100);
+  if (ui.tab === "chat") chat.seen = chat.msgs.length;
+  else if (!chat.loaded) chat.seen = chat.msgs.length;      // messages from before you arrived aren't unread
+  const last = chat.msgs[chat.msgs.length - 1];
+  if (chat.loaded && chat.msgs.length > was && last && last.t !== me.team && ui.tab !== "chat") {
+    toast(`${teamName(last.t)}: ${last.m}`);
+  }
+  chat.loaded = true;
+  renderChat();
+  renderChatBadge();
+}
+
+async function sendChat() {
+  const input = $("#chatInput");
+  const text = input.value.trim().slice(0, CHAT_MAX);
+  if (!text || !me.team) return;
+  input.value = "";
+  try { await backend.push("chat", { t: me.team, m: text, at: TS }); }
+  catch (e) { input.value = text; toast("Message failed: " + (e.message || e), true); }
+}
+
+/* ------------------------------------------------------------- who's here
+   Every signed-in page says which team it is, once a PRESENCE_EVERY. Firebase
+   drops the entry the moment that page's connection goes, and the age check
+   covers the rest (a browser killed without a clean disconnect, or local test
+   mode, which has no server to notice). */
+const PRESENCE_EVERY = 20000;
+const PRESENCE_STALE = 60000;
+
+function publishPresence() {
+  if (!me.team) return;                                    // watch-only pages have no account
+  backend.presence({ team: me.team, at: TS }).catch(() => { /* not fatal */ });
+}
+
+function onPresence(v) {
+  const now = backend.serverNow();
+  online = new Set(rows(v).filter(([, e]) => e && e.team && now - (e.at || 0) < PRESENCE_STALE).map(([, e]) => e.team));
+  renderTeams();
+}
+
 /* ---------------------------------------------------------------- modal / toast */
 
 function showModal(html) {
@@ -839,7 +956,8 @@ function wire() {
   document.querySelectorAll("#tabs button").forEach(b => b.onclick = () => {
     ui.tab = b.dataset.tab;
     document.querySelectorAll("#tabs button").forEach(x => x.classList.toggle("active", x === b));
-    for (const t of ["players", "board", "log", "teams"]) $(`#tab-${t}`).hidden = t !== ui.tab;
+    for (const t of ["players", "board", "log", "teams", "chat"]) $(`#tab-${t}`).hidden = t !== ui.tab;
+    if (ui.tab === "chat") { chat.seen = chat.msgs.length; renderChatBadge(); $("#chatInput").focus(); }
     render();
   });
   $("#search").oninput = e => { ui.q = e.target.value; renderPlayers(); };
@@ -880,6 +998,8 @@ function wire() {
     if (e.key === "Escape" && !$("#modal").hidden) closeModal();
     if (e.key === "/" && document.activeElement.tagName !== "INPUT") { e.preventDefault(); $("#search").focus(); }
   });
+  $("#chatForm").onsubmit = e => { e.preventDefault(); sendChat(); };
+  $("#chatInput").onkeydown = e => { if (e.key === "Enter") { e.preventDefault(); sendChat(); } };
   $("#cStart").onclick = () => startDraft(false);
   $("#cTest").onclick = () => startDraft(true);
   $("#cKeepers").onclick = () => openKeeperAdmin();
@@ -894,7 +1014,7 @@ function wire() {
   $("#commishSignIn").onclick = async () => {
     try {
       if (await backend.commishSignIn()) {
-        me.commish = true; me.team = LEAGUE.commishTeam; banner.extra = ""; await loadMyKeepers(); render();
+        me.commish = true; me.team = LEAGUE.commishTeam; banner.extra = ""; await loadMyKeepers(); publishPresence(); render();
         toast("Signed in as commissioner");
       } else {
         await backend.signOut();
@@ -936,14 +1056,22 @@ async function main() {
   } catch (e) {
     banner.extra = "Could not reach the draft server: " + esc(e.message || e); banner.bad = true; render(); return;
   }
-  backend.onConnection(ok => { const d = $("#connDot"); d.className = "dot " + (ok ? "on" : "off"); d.title = ok ? "Connected" : "Reconnecting..."; });
+  backend.onConnection(ok => {
+    const d = $("#connDot"); d.className = "dot " + (ok ? "on" : "off"); d.title = ok ? "Connected" : "Reconnecting...";
+    if (ok) publishPresence();                     // and again after every reconnect
+  });
   await backend.authReady();
   me.commish = await backend.isCommish();
   if (me.commish) me.team = LEAGUE.commishTeam;
   else await restoreTeam();
   await loadMyKeepers();
 
-  backend.subscribe(t => {
+  publishPresence();
+  setInterval(publishPresence, PRESENCE_EVERY);
+  backend.watch("presence", onPresence);
+  // a denied read here means the database rules haven't been re-published yet
+  backend.watch("chat", onChat, e => { chat.error = "Chat is unavailable: " + (e.message || e); renderChat(); });
+  backend.watch("draft", t => {
     D = derive(t);
     if (D && !D.done) D.stuck = isStuck(D, D.onClock);
     if (D && D.cur !== autoTried && autoTried !== -1 && D.cur > autoTried) autoTried = -1;

@@ -7,6 +7,11 @@
   "D": 4,
   "G": 2
  },
+ "bench": {
+  "F": 1,
+  "D": 1,
+  "G": 1
+ },
  "rounds": 10,
  "clockSec": 90,
  "teams": [

@@ -1,8 +1,10 @@
 /* Two interchangeable backends behind one small interface, so the room logic
    in app.js never knows which one it is talking to:
 
-     subscribe(cb)        cb(draftTree | null) on every change
+     watch(path, cb)      cb(value | null) on every change under that path
      update(updates)      atomic multi-path write; TS anywhere = server time
+     push(path, value)    append one child under path (chat)
+     presence(value)      publish "I am here", removed when this page goes away
      serverNow()          ms, corrected for this device's clock skew
      onConnection(cb)     cb(true | false)
      authReady()          resolves once any saved sign-in is restored
@@ -39,17 +41,30 @@ export async function connectFirebase(cfg) {
   const app = initializeApp(cfg);
   const auth = A.getAuth(app);
   const db = D.getDatabase(app);
-  let offset = 0;
+  let offset = 0, presArmed = null;
   D.onValue(D.ref(db, ".info/serverTimeOffset"), s => { offset = s.val() || 0; });
 
   const api = {
     kind: "firebase",
-    subscribe(cb, onErr) {
-      return D.onValue(D.ref(db, "draft"), s => cb(s.val()), e => onErr && onErr(e));
+    watch(path, cb, onErr) {
+      return D.onValue(D.ref(db, path), s => cb(s.val()), e => onErr && onErr(e));
     },
     onConnection(cb) { D.onValue(D.ref(db, ".info/connected"), s => cb(!!s.val())); },
     serverNow: () => Date.now() + offset,
     update: u => D.update(D.ref(db), mapTS(u, () => D.serverTimestamp())),
+    push: (path, v) => D.push(D.ref(db, path), mapTS(v, () => D.serverTimestamp())),
+    // Signed in = an owner on their team link, or the commissioner. A watcher
+    // has no account, so nothing to publish. The server drops the entry when
+    // this browser's socket goes, which is what makes the list trustworthy.
+    async presence(v) {
+      if (!auth.currentUser) return;
+      const r = D.ref(db, `presence/${auth.currentUser.uid}`);
+      if (presArmed !== auth.currentUser.uid) {            // the SDK keeps it armed across reconnects
+        presArmed = auth.currentUser.uid;
+        await D.onDisconnect(r).remove();
+      }
+      await D.set(r, mapTS(v, () => D.serverTimestamp()));
+    },
     authReady: () => new Promise(res => { const un = A.onAuthStateChanged(auth, u => { un(); res(u); }); }),
     async claimTeam(team, key) {
       try {
@@ -82,7 +97,9 @@ export function connectLocal(opts) {
   const bc = "BroadcastChannel" in window ? new BroadcastChannel("nsgDraftLocal") : null;
   const load = () => { try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch { return {}; } };
   const subs = [];
-  const emit = () => { const t = load(); subs.forEach(cb => cb(t.draft || null)); };
+  const emit = () => { const t = load(); subs.forEach(({ path, cb }) => cb(getAt(t, path) ?? null)); };
+  const tabId = Math.random().toString(36).slice(2);
+  let presArmed = false;
   if (bc) bc.onmessage = emit;
   window.addEventListener("storage", e => { if (e.key === KEY) emit(); });
 
@@ -99,7 +116,7 @@ export function connectLocal(opts) {
 
   return {
     kind: "local",
-    subscribe(cb) { subs.push(cb); setTimeout(() => cb(load().draft || null), 0); },
+    watch(path, cb) { subs.push({ path, cb }); setTimeout(() => cb(getAt(load(), path) ?? null), 0); },
     onConnection(cb) { cb(true); },
     serverNow: () => Date.now(),
     async update(u) {
@@ -116,6 +133,14 @@ export function connectLocal(opts) {
       localStorage.setItem(KEY, JSON.stringify(tree));
       if (bc) bc.postMessage(1);
       emit();
+    },
+    async push(path, v) { await this.update({ [`${path}/${Date.now().toString(36)}-${tabId}`]: v }); },
+    async presence(v) {
+      if (!presArmed) {
+        presArmed = true;
+        window.addEventListener("pagehide", () => this.update({ [`presence/${tabId}`]: null }), { once: true });
+      }
+      await this.update({ [`presence/${tabId}`]: v });
     },
     authReady: async () => null,
     claimTeam: async () => true,
