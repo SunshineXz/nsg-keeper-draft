@@ -58,7 +58,8 @@ function statVal(p, key) {
 }
 let autoTried = -1, lastOnClock = null, pendingPick = false;
 let online = new Set();                     // teams with somebody in the room
-const chat = { msgs: [], seen: 0, loaded: false, error: "" };
+const chat = { msgs: [], seen: 0, loaded: false, error: "", open: false };
+const CHAT_OPEN_KEY = "nsgChatOpen";
 
 /* ---------------------------------------------------------------- derive */
 
@@ -513,7 +514,7 @@ function render() {
   renderTeams();
   if (ui.tab === "board") renderBoard();
   if (ui.tab === "log") renderLog();
-  if (ui.tab === "chat") renderChat();
+  renderChat();                     // who may type changes with sign-in
 }
 
 function renderBanner() {
@@ -834,8 +835,10 @@ function editPick(n) {
    One shared list of short messages, so an owner can ask for a pause or an
    undo without leaving the room. Anyone can read it; only a team (or the
    commissioner) can post, and the rules check that the team on a message is
-   the one that browser holds the link for. A message that lands while you are
-   on another tab shows as a toast and a count on the Chat tab. */
+   the one that browser holds the link for. It lives in a bubble pinned to the
+   corner of every tab, so reading or answering never costs your place in the
+   player list. A message that lands while the bubble is closed (or the page
+   is in the background) chimes, shows as a toast and puts a red count on it. */
 const CHAT_MAX = 300;
 
 function renderChat() {
@@ -852,7 +855,8 @@ function renderChat() {
         <span class="msg-at">${String(t.getHours()).padStart(2, "0")}:${String(t.getMinutes()).padStart(2, "0")}</span></div>
       <div class="msg-text">${esc(m.m)}</div></div>`;
   }).join("");
-  if (atBottom || ui.tab === "chat") el.scrollTop = el.scrollHeight;
+  if (atBottom || chat.justOpened) el.scrollTop = el.scrollHeight;
+  chat.justOpened = false;
 }
 
 function renderChatBadge() {
@@ -865,14 +869,23 @@ function renderChatBadge() {
 function onChat(v) {
   const was = chat.msgs.length;
   chat.msgs = rows(v).map(([k, m]) => ({ k, ...m })).sort((a, b) => (a.at || 0) - (b.at || 0) || a.k.localeCompare(b.k)).slice(-100);
-  if (ui.tab === "chat") chat.seen = chat.msgs.length;
-  else if (!chat.loaded) chat.seen = chat.msgs.length;      // messages from before you arrived aren't unread
+  if (chat.open || !chat.loaded) chat.seen = chat.msgs.length;   // messages from before you arrived aren't unread
   const last = chat.msgs[chat.msgs.length - 1];
-  if (chat.loaded && chat.msgs.length > was && last && last.t !== me.team && ui.tab !== "chat") {
-    toast(`${teamName(last.t)}: ${last.m}`);
+  if (chat.loaded && chat.msgs.length > was && last && last.t !== me.team && (!chat.open || document.hidden)) {
+    beep(660); setTimeout(() => beep(990), 130);             // not the on-the-clock beep
+    if (!chat.open) toast(`${teamName(last.t)}: ${last.m}`);
   }
   chat.loaded = true;
   renderChat();
+  renderChatBadge();
+}
+
+function setChatOpen(open) {
+  chat.open = open;
+  try { localStorage.setItem(CHAT_OPEN_KEY, open ? "1" : ""); } catch { /* private mode */ }
+  $("#chatPanel").hidden = !open;
+  $("#chatToggle").classList.toggle("on", open);
+  if (open) { chat.seen = chat.msgs.length; chat.justOpened = true; renderChat(); if (me.team) $("#chatInput").focus(); }
   renderChatBadge();
 }
 
@@ -933,11 +946,11 @@ function copy(text) {
 /* ---------------------------------------------------------------- your-turn alert */
 
 let audioCtx = null;
-function beep() {
+function beep(freq = 880) {
   try {
     audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
     const o = audioCtx.createOscillator(), g = audioCtx.createGain();
-    o.frequency.value = 880; g.gain.value = 0.08;
+    o.frequency.value = freq; g.gain.value = 0.08;
     o.connect(g); g.connect(audioCtx.destination);
     o.start(); o.stop(audioCtx.currentTime + 0.18);
   } catch { /* no audio until the page has been clicked once */ }
@@ -956,8 +969,7 @@ function wire() {
   document.querySelectorAll("#tabs button").forEach(b => b.onclick = () => {
     ui.tab = b.dataset.tab;
     document.querySelectorAll("#tabs button").forEach(x => x.classList.toggle("active", x === b));
-    for (const t of ["players", "board", "log", "teams", "chat"]) $(`#tab-${t}`).hidden = t !== ui.tab;
-    if (ui.tab === "chat") { chat.seen = chat.msgs.length; renderChatBadge(); $("#chatInput").focus(); }
+    for (const t of ["players", "board", "log", "teams"]) $(`#tab-${t}`).hidden = t !== ui.tab;
     render();
   });
   $("#search").oninput = e => { ui.q = e.target.value; renderPlayers(); };
@@ -999,6 +1011,9 @@ function wire() {
     if (e.key === "/" && document.activeElement.tagName !== "INPUT") { e.preventDefault(); $("#search").focus(); }
   });
   $("#chatForm").onsubmit = e => { e.preventDefault(); sendChat(); };
+  $("#chatToggle").onclick = () => setChatOpen(!chat.open);
+  $("#chatClose").onclick = () => setChatOpen(false);
+  try { if (localStorage.getItem(CHAT_OPEN_KEY)) setChatOpen(true); } catch { /* private mode */ }
   $("#chatInput").onkeydown = e => { if (e.key === "Enter") { e.preventDefault(); sendChat(); } };
   $("#cStart").onclick = () => startDraft(false);
   $("#cTest").onclick = () => startDraft(true);

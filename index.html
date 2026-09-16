@@ -50,7 +50,6 @@
   <button data-tab="board">Board</button>
   <button data-tab="teams" class="mobile-only">Teams</button>
   <button data-tab="log">Picks</button>
-  <button data-tab="chat">Chat <span class="tabbadge" id="chatBadge" hidden></span></button>
 </nav>
 
 <main class="layout">
@@ -86,20 +85,24 @@
     <div id="logList"></div>
   </section>
 
-  <section class="panel tab-panel" id="tab-chat" hidden>
-    <div class="chatlist" id="chatList"></div>
-    <form class="chatbar" id="chatForm">
-      <input id="chatInput" type="text" maxlength="300" autocomplete="off" placeholder="Message the room - ask for a pause, an undo...">
-      <button class="btn primary" type="submit">Send</button>
-    </form>
-    <p class="hint" id="chatHint"></p>
-  </section>
-
   <aside class="panel teams tab-panel" id="tab-teams">
     <h2>Teams <span class="onlinecount" id="onlineCount"></span></h2>
     <div id="teamList"></div>
   </aside>
 </main>
+
+<div class="chatdock" id="chatDock">
+  <div class="chatpanel" id="chatPanel" hidden>
+    <div class="chathead"><b>Room chat</b><button class="linkbtn" id="chatClose" title="Hide chat">Hide</button></div>
+    <div class="chatlist" id="chatList"></div>
+    <form class="chatbar" id="chatForm">
+      <input id="chatInput" type="text" maxlength="300" autocomplete="off" placeholder="Pause, undo, anything...">
+      <button class="btn primary" type="submit">Send</button>
+    </form>
+    <p class="hint" id="chatHint"></p>
+  </div>
+  <button class="chattoggle" id="chatToggle" title="Room chat">&#128172; Chat <span class="chatdot" id="chatBadge" hidden></span></button>
+</div>
 
 <div id="modal" class="modal" hidden><div class="modal-box" id="modalBox"></div></div>
 <div id="toast" class="toast" hidden></div>
